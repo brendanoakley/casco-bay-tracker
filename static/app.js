@@ -34,11 +34,30 @@ const TYPE_LABELS = {
   other: "Other",
 };
 
+// ───────────────────────── GSAP safety net ─────────────────────────
+
+// If GSAP's CDN was blocked (ad blocker, school network filter, offline),
+// `gsap` is undefined and one missing animation library must NOT take down
+// the whole dashboard. G is either the real GSAP or a shim that skips the
+// motion and snaps everything straight to its final state.
+const G = (typeof gsap !== "undefined") ? gsap : {
+  to(target, vars) {
+    // animateNumber drives text through onUpdate — snap to the end value.
+    if (typeof vars.v === "number") target.v = vars.v;
+    if (vars.onUpdate) vars.onUpdate();
+  },
+  from() {},   // "animate from hidden" — without GSAP, elements are already
+  fromTo() {}, // in their final visible state, so doing nothing is correct
+};
+if (typeof gsap === "undefined") {
+  console.warn("GSAP failed to load (blocked CDN?) — running without animations");
+}
+
 // ───────────────────────── Entrance animation ─────────────────────────
 
 // Everything tagged .animate-in fades up in sequence on page load.
 // GSAP's stagger does the "each card 90 ms after the previous" timing.
-gsap.from(".animate-in", {
+G.from(".animate-in", {
   y: 24,
   opacity: 0,
   duration: 0.7,
@@ -58,7 +77,7 @@ function animateNumber(el, newVal, decimals = 0) {
   if (from === newVal && el._val !== undefined) return; // nothing to do
   el._val = newVal;
   const proxy = { v: from };
-  gsap.to(proxy, {
+  G.to(proxy, {
     v: newVal,
     duration: 0.8,
     ease: "power2.out",
@@ -135,7 +154,7 @@ function selectVessel(mmsi) {
   if (reopened) {
     // Slide the panel in and fetch the rich info for this ship.
     const panel = $("vessel-panel");
-    gsap.fromTo(panel, { x: 24, opacity: 0 }, { x: 0, opacity: 1, duration: 0.45, ease: "power3.out" });
+    G.fromTo(panel, { x: 24, opacity: 0 }, { x: 0, opacity: 1, duration: 0.45, ease: "power3.out" });
     loadVesselInfo(mmsi);
     // Refresh marker styling so the gold ring moves to the new selection.
     for (const v of Object.values(vesselData)) upsertMarker(v);
@@ -192,7 +211,7 @@ async function loadVesselInfo(mmsi) {
       $("vp-photo").src = info.photo_url;
       $("vp-photo-credit").textContent = info.photo_credit || "";
       show($("vp-photo-wrap"));
-      gsap.from($("vp-photo-wrap"), { opacity: 0, y: 8, duration: 0.4 });
+      G.from($("vp-photo-wrap"), { opacity: 0, y: 8, duration: 0.4 });
     }
 
     // Specs: build rows only for the fields the database actually had.
@@ -214,7 +233,7 @@ async function loadVesselInfo(mmsi) {
           </div>`)
         .join("");
       show($("vp-specs"));
-      gsap.from($("vp-specs"), { opacity: 0, y: 8, duration: 0.4, delay: 0.05 });
+      G.from($("vp-specs"), { opacity: 0, y: 8, duration: 0.4, delay: 0.05 });
     }
 
     // History: short timeline of dated events (build, renames, service).
@@ -227,7 +246,7 @@ async function loadVesselInfo(mmsi) {
           </div>`)
         .join("");
       show($("vp-history"));
-      gsap.from($("vp-history"), { opacity: 0, y: 8, duration: 0.4, delay: 0.1 });
+      G.from($("vp-history"), { opacity: 0, y: 8, duration: 0.4, delay: 0.1 });
     }
 
     if (!info.photo_url && !specRows.length && !(info.history || []).length) {
@@ -269,7 +288,7 @@ async function pollFeatured() {
 
     show(row);
     if (wasHidden) {
-      gsap.from("#featured-cards > div", { y: 16, opacity: 0, duration: 0.5, stagger: 0.1, ease: "power3.out", clearProps: "all" });
+      G.from("#featured-cards > div", { y: 16, opacity: 0, duration: 0.5, stagger: 0.1, ease: "power3.out", clearProps: "all" });
     }
   } catch (err) {
     console.error("featured poll failed:", err);

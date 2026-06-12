@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Casco Bay Vessel Tracker</title>
+  <!-- Tiny inline favicon (anchor emoji) — avoids a 404 for /favicon.ico -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>⚓</text></svg>" />
 
   <!-- Tailwind CSS via CDN: utility classes without a build step. -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -346,6 +348,8 @@
     Hide panel
   </button>
 
-  <script src="/static/app.js"></script>
+  <!-- ?v=2 is cache-busting: bumping it forces browsers to fetch the new
+       file instead of reusing a cached copy after an update. -->
+  <script src="/static/app.js?v=2"></script>
 </body>
 </html>
