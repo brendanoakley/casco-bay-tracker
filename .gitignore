@@ -1,0 +1,13 @@
+# Secrets — the .env file holds the real API key and must NEVER be committed
+.env
+
+# SQLite databases (historical vessel logs can get big, and are machine-local)
+*.db
+
+# Python cruft
+__pycache__/
+*.pyc
+venv/
+
+# macOS
+.DS_Store

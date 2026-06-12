@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Casco Bay Vessel Tracker</title>
+
+  <!-- Tailwind CSS via CDN: gives us utility classes (bg-slate-900, p-4, …)
+       without a build step. Fine for a project like this. -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Inter — the clean sans-serif used by Linear, GitHub, etc.
+       JetBrains Mono for the data/number readouts. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- Leaflet: the open-source map library -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    // Tell Tailwind to use our font choices for its `font-sans` / `font-mono` classes.
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    /* Smoothly slide markers to their new position instead of teleporting.
+       Leaflet positions markers with a CSS transform, so transitioning the
+       transform property animates every position update for free. */
+    .leaflet-marker-icon { transition: transform 1.5s linear; }
+
+    /* The pulsing "live" dot in the header. */
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    .pulse { animation: pulse-dot 2s ease-in-out infinite; }
+
+    /* Vessel marker: an arrow we rotate to match the ship's heading. */
+    .vessel-arrow {
+      width: 0; height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-bottom: 16px solid currentColor;
+      filter: drop-shadow(0 0 3px rgba(0,0,0,0.6));
+    }
+    /* Vessel marker without a heading: a simple dot. */
+    .vessel-dot {
+      width: 12px; height: 12px;
+      border-radius: 9999px;
+      background: currentColor;
+      border: 2px solid rgba(15, 23, 42, 0.8);
+      box-shadow: 0 0 4px rgba(0,0,0,0.5);
+    }
+
+    /* Make Leaflet's own controls match the dark theme. */
+    .leaflet-control-zoom a {
+      background: #1e293b !important; color: #cbd5e1 !important;
+      border-color: #334155 !important;
+    }
+    .leaflet-control-attribution {
+      background: rgba(15, 23, 42, 0.8) !important; color: #64748b !important;
+    }
+    .leaflet-control-attribution a { color: #94a3b8 !important; }
+  </style>
+</head>
+
+<!-- h-screen + flex-col: header and KPI row take their natural height,
+     the map row stretches to fill whatever is left. -->
+<body class="bg-slate-900 text-slate-200 font-sans h-screen flex flex-col overflow-hidden">
+
+  <!-- ───────────────────────── Top bar ───────────────────────── -->
+  <header class="flex items-center justify-between px-5 py-3 border-b border-slate-700 bg-slate-800/60 shrink-0">
+    <div class="flex items-center gap-3">
+      <h1 class="text-base font-semibold tracking-tight text-slate-100">Casco Bay Vessel Tracker</h1>
+      <span class="text-xs text-slate-500 hidden sm:inline">Portland, Maine · AIS live feed</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <span class="text-xs text-slate-500 font-mono" id="clock">--:--:--</span>
+      <div class="flex items-center gap-2 px-3 py-1 rounded-lg border border-slate-700 bg-slate-800">
+        <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+        <span id="status-text" class="text-xs font-medium text-slate-400">CONNECTING</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ───────────────────────── KPI cards ───────────────────────── -->
+  <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 px-5 py-3 shrink-0">
+
+    <!-- Total vessels -->
+    <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm">
+      <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Active Vessels</p>
+      <p class="text-3xl font-mono font-semibold text-slate-100 mt-1 transition-opacity duration-300" id="kpi-total">—</p>
+      <p class="text-xs text-slate-500 mt-1">reported in the last 15 min</p>
+    </div>
+
+    <!-- Breakdown by type (rows are filled in by app.js) -->
+    <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm">
+      <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">By Type</p>
+      <div id="kpi-types" class="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs"></div>
+    </div>
+
+    <!-- Tide -->
+    <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm">
+      <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Tide · Portland</p>
+      <p class="mt-1">
+        <span class="text-3xl font-mono font-semibold text-slate-100" id="kpi-tide-height">—</span>
+        <span class="text-sm text-slate-400">ft</span>
+        <span class="text-sm ml-1" id="kpi-tide-arrow"></span>
+      </p>
+      <p class="text-xs text-slate-500 mt-1" id="kpi-tide-next">fetching NOAA data…</p>
+    </div>
+
+    <!-- Last update -->
+    <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm">
+      <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Last AIS Message</p>
+      <p class="text-3xl font-mono font-semibold text-slate-100 mt-1" id="kpi-last-update">—</p>
+      <p class="text-xs text-slate-500 mt-1">seconds ago</p>
+    </div>
+  </section>
+
+  <!-- ───────────────────── Map + sidebar ───────────────────── -->
+  <main class="flex flex-1 min-h-0 px-5 pb-4 gap-3">
+
+    <!-- The map fills all remaining space. -->
+    <div id="map" class="flex-1 rounded-xl border border-slate-700 shadow-sm z-0"></div>
+
+    <!-- Sidebar: vessel details + ferry schedule. Collapsible. -->
+    <aside id="sidebar" class="w-72 shrink-0 flex flex-col gap-3 overflow-y-auto">
+
+      <!-- Selected vessel details (hidden until a marker is clicked) -->
+      <div id="vessel-panel" class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm hidden">
+        <div class="flex items-start justify-between">
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Vessel</p>
+          <button onclick="closeVesselPanel()" class="text-slate-500 hover:text-slate-300 text-xs">✕</button>
+        </div>
+        <p class="text-lg font-semibold text-slate-100 mt-1" id="vp-name">—</p>
+        <span id="vp-type" class="inline-block text-xs font-medium px-2 py-0.5 rounded-md mt-1"></span>
+        <dl class="mt-3 space-y-2 text-sm">
+          <div class="flex justify-between"><dt class="text-slate-400">MMSI</dt><dd class="font-mono text-slate-200" id="vp-mmsi">—</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-400">Speed</dt><dd class="font-mono text-slate-200" id="vp-speed">—</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-400">Heading</dt><dd class="font-mono text-slate-200" id="vp-heading">—</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-400">Position</dt><dd class="font-mono text-slate-200 text-xs" id="vp-pos">—</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-400">Updated</dt><dd class="font-mono text-slate-200" id="vp-updated">—</dd></div>
+        </dl>
+      </div>
+
+      <!-- Ferry schedule comparison -->
+      <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm">
+        <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Ferry · Peaks Island</p>
+        <div class="flex items-center gap-2 mt-2">
+          <span id="ferry-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+          <span class="text-sm text-slate-300" id="ferry-status">checking terminal…</span>
+        </div>
+        <p class="text-xs font-medium text-slate-400 uppercase tracking-wider mt-4">Next Departures</p>
+        <ul id="ferry-departures" class="mt-1 space-y-1 text-sm font-mono text-slate-200"></ul>
+        <p class="text-xs text-slate-500 mt-3">Casco Bay Lines weekday schedule · Portland terminal</p>
+      </div>
+
+      <!-- Vessel list: everything currently on the map -->
+      <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm flex-1 min-h-0 flex flex-col">
+        <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">All Vessels</p>
+        <ul id="vessel-list" class="mt-2 space-y-1 text-sm overflow-y-auto"></ul>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Sidebar collapse toggle, floating over the map's right edge -->
+  <button id="sidebar-toggle" onclick="toggleSidebar()"
+          class="fixed bottom-6 right-6 z-[1000] rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-300 shadow-lg hover:bg-slate-700">
+    Hide panel
+  </button>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
