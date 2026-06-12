@@ -155,6 +155,12 @@ def handle_message(raw, verbose=False):
             "speed": None,      # knots
             "heading": None,    # degrees
             "last_update": None,
+            # Extras from static data, used by the Vessel Spotlight feature:
+            "imo": None,        # IMO number — a hull ID that survives renames
+            "callsign": None,
+            "destination": None,
+            "length_m": None,   # from the ship's self-reported dimensions
+            "beam_m": None,
         })
         if name:
             vessel["name"] = name
@@ -190,6 +196,25 @@ def handle_message(raw, verbose=False):
             if code is not None:
                 vessel["type_code"] = code
                 vessel["type"] = classify_ship_type(code)
+
+            # Extras for the Spotlight feature. IMO 0 means "not assigned"
+            # (small boats and most ferries don't have one).
+            imo = body.get("ImoNumber")
+            if imo:
+                vessel["imo"] = imo
+            cs = (body.get("CallSign") or "").strip()
+            if cs:
+                vessel["callsign"] = cs
+            dest = (body.get("Destination") or "").strip()
+            if dest:
+                vessel["destination"] = dest
+            # Dimension reports the GPS antenna's distance to bow (A),
+            # stern (B), port (C), starboard (D) — so A+B is the ship's
+            # length and C+D its beam (width).
+            dim = body.get("Dimension") or {}
+            if dim.get("A") or dim.get("B"):
+                vessel["length_m"] = (dim.get("A") or 0) + (dim.get("B") or 0)
+                vessel["beam_m"] = (dim.get("C") or 0) + (dim.get("D") or 0)
             if verbose:
                 print(f"[static] {vessel['name'] or mmsi}: type={vessel['type']} (code {code})")
 

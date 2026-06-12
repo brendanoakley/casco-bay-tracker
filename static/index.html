@@ -5,12 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Casco Bay Vessel Tracker</title>
 
-  <!-- Tailwind CSS via CDN: gives us utility classes (bg-slate-900, p-4, …)
-       without a build step. Fine for a project like this. -->
+  <!-- Tailwind CSS via CDN: utility classes without a build step. -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- Inter — the clean sans-serif used by Linear, GitHub, etc.
-       JetBrains Mono for the data/number readouts. -->
+  <!-- GSAP: animation library for the entrance sequences and number counters.
+       CSS transitions handle the simpler hover/state effects. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+  <!-- Inter for text, JetBrains Mono for data readouts. -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
@@ -19,7 +21,9 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <script>
-    // Tell Tailwind to use our font choices for its `font-sans` / `font-mono` classes.
+    // Extend Tailwind with our fonts and the gold accent palette that gives
+    // the dashboard its "private banking" feel. Used sparingly: highlights,
+    // active states, and the featured vessels section.
     tailwind.config = {
       theme: {
         extend: {
@@ -27,66 +31,178 @@
             sans: ['Inter', 'system-ui', 'sans-serif'],
             mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
           },
+          colors: {
+            gold: { 300: '#e8d28a', 400: '#d4af37', 500: '#b8962e' },
+          },
         },
       },
     };
   </script>
 
   <style>
-    /* Smoothly slide markers to their new position instead of teleporting.
-       Leaflet positions markers with a CSS transform, so transitioning the
-       transform property animates every position update for free. */
-    .leaflet-marker-icon { transition: transform 1.5s linear; }
-
-    /* The pulsing "live" dot in the header. */
-    @keyframes pulse-dot {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.35; }
+    /* ════════════════════ Animated background ════════════════════
+       Two huge, heavily-blurred color blobs drift very slowly behind
+       everything, plus a faint grid. Barely visible on purpose — it adds
+       depth without competing with the data. */
+    .bg-blob {
+      position: fixed;
+      width: 60vw; height: 60vw;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.07;
+      pointer-events: none;
+      z-index: 0;
     }
-    .pulse { animation: pulse-dot 2s ease-in-out infinite; }
+    @keyframes drift-a {
+      0%, 100% { transform: translate(-10%, -20%) scale(1); }
+      50%      { transform: translate(15%, 5%) scale(1.15); }
+    }
+    @keyframes drift-b {
+      0%, 100% { transform: translate(20%, 10%) scale(1.1); }
+      50%      { transform: translate(-5%, -10%) scale(0.95); }
+    }
+    .bg-grid {
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(rgba(148,163,184,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148,163,184,0.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      animation: grid-pan 90s linear infinite;
+      pointer-events: none;
+      z-index: 0;
+    }
+    @keyframes grid-pan {
+      from { background-position: 0 0; }
+      to   { background-position: 48px 48px; }
+    }
 
-    /* Vessel marker: an arrow we rotate to match the ship's heading. */
+    /* ════════════════════ Glassmorphism cards ════════════════════
+       Semi-transparent background + backdrop blur = frosted glass.
+       The gradient border uses the mask trick: a ::before layer paints a
+       gradient, then masking cuts out everything except a 1px ring. */
+    .glass {
+      position: relative;
+      background: rgba(30, 41, 59, 0.55);  /* slate-800 @ 55% */
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-radius: 0.75rem;
+    }
+    .glass::before {
+      content: "";
+      position: absolute; inset: 0;
+      border-radius: inherit;
+      padding: 1px;
+      background: linear-gradient(135deg,
+        rgba(148, 163, 184, 0.30),
+        rgba(148, 163, 184, 0.06) 45%,
+        rgba(212, 175, 55, 0.22));
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+
+    /* Hover micro-interaction: cards lift slightly and pick up a soft
+       gold-tinted glow. transform+shadow only — cheap for the GPU. */
+    .lift {
+      transition: transform 0.25s ease, box-shadow 0.25s ease;
+    }
+    .lift:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 0 24px rgba(212, 175, 55, 0.07);
+    }
+
+    /* ════════════════════ Live status: breathing glow ════════════════════ */
+    @keyframes breathe {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); opacity: 1; }
+      50%      { box-shadow: 0 0 10px 4px rgba(52, 211, 153, 0.25); opacity: 0.75; }
+    }
+    .breathe { animation: breathe 2.6s ease-in-out infinite; }
+
+    /* ════════════════════ Skeleton shimmer ════════════════════
+       Placeholder blocks shown while data is first loading: a gray bar
+       with a light band sweeping across it. */
+    .skeleton {
+      position: relative;
+      overflow: hidden;
+      background: rgba(51, 65, 85, 0.6);
+      border-radius: 0.375rem;
+    }
+    .skeleton::after {
+      content: "";
+      position: absolute; inset: 0;
+      transform: translateX(-100%);
+      background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.18), transparent);
+      animation: shimmer 1.6s infinite;
+    }
+    @keyframes shimmer { to { transform: translateX(100%); } }
+
+    /* ════════════════════ Map markers ════════════════════
+       Leaflet positions markers with a CSS transform; transitioning it
+       makes every position update glide instead of jump. */
+    .leaflet-marker-icon { transition: transform 1.8s cubic-bezier(0.4, 0, 0.2, 1); }
+
     .vessel-arrow {
       width: 0; height: 0;
       border-left: 6px solid transparent;
       border-right: 6px solid transparent;
       border-bottom: 16px solid currentColor;
-      filter: drop-shadow(0 0 3px rgba(0,0,0,0.6));
+      filter: drop-shadow(0 0 4px rgba(0,0,0,0.7));
+      transition: filter 0.3s ease;
     }
-    /* Vessel marker without a heading: a simple dot. */
     .vessel-dot {
       width: 12px; height: 12px;
       border-radius: 9999px;
       background: currentColor;
       border: 2px solid rgba(15, 23, 42, 0.8);
-      box-shadow: 0 0 4px rgba(0,0,0,0.5);
+      box-shadow: 0 0 5px rgba(0,0,0,0.6);
+    }
+    /* Gold ring around the marker of the vessel that's open in Spotlight. */
+    .marker-selected .vessel-arrow,
+    .marker-selected .vessel-dot {
+      filter: drop-shadow(0 0 6px rgba(212, 175, 55, 0.9));
     }
 
-    /* Make Leaflet's own controls match the dark theme. */
+    /* Dark-theme Leaflet controls. */
     .leaflet-control-zoom a {
       background: #1e293b !important; color: #cbd5e1 !important;
       border-color: #334155 !important;
+      transition: background 0.2s ease;
     }
+    .leaflet-control-zoom a:hover { background: #334155 !important; }
     .leaflet-control-attribution {
       background: rgba(15, 23, 42, 0.8) !important; color: #64748b !important;
     }
     .leaflet-control-attribution a { color: #94a3b8 !important; }
+
+    /* Buttons: smooth color + scale feedback. */
+    .btn { transition: background 0.2s ease, color 0.2s ease, transform 0.15s ease; }
+    .btn:hover { transform: scale(1.03); }
+    .btn:active { transform: scale(0.97); }
+
+    /* Thin styled scrollbars for the sidebar lists. */
+    .scroll-slim::-webkit-scrollbar { width: 6px; }
+    .scroll-slim::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
   </style>
 </head>
 
-<!-- h-screen + flex-col: header and KPI row take their natural height,
-     the map row stretches to fill whatever is left. -->
 <body class="bg-slate-900 text-slate-200 font-sans h-screen flex flex-col overflow-hidden">
 
+  <!-- Animated background layers (behind everything, pointer-events: none) -->
+  <div class="bg-grid"></div>
+  <div class="bg-blob" style="background:#1d4ed8; top:-20vh; left:-10vw; animation: drift-a 70s ease-in-out infinite;"></div>
+  <div class="bg-blob" style="background:#d4af37; bottom:-30vh; right:-15vw; animation: drift-b 90s ease-in-out infinite;"></div>
+
   <!-- ───────────────────────── Top bar ───────────────────────── -->
-  <header class="flex items-center justify-between px-5 py-3 border-b border-slate-700 bg-slate-800/60 shrink-0">
+  <header class="relative z-10 flex items-center justify-between px-5 py-3 border-b border-slate-700/60 bg-slate-900/70 backdrop-blur-md shrink-0 animate-in">
     <div class="flex items-center gap-3">
       <h1 class="text-base font-semibold tracking-tight text-slate-100">Casco Bay Vessel Tracker</h1>
       <span class="text-xs text-slate-500 hidden sm:inline">Portland, Maine · AIS live feed</span>
     </div>
     <div class="flex items-center gap-4">
       <span class="text-xs text-slate-500 font-mono" id="clock">--:--:--</span>
-      <div class="flex items-center gap-2 px-3 py-1 rounded-lg border border-slate-700 bg-slate-800">
+      <div class="flex items-center gap-2 px-3 py-1 rounded-lg border border-slate-700/70 bg-slate-800/70">
         <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
         <span id="status-text" class="text-xs font-medium text-slate-400">CONNECTING</span>
       </div>
@@ -94,26 +210,29 @@
   </header>
 
   <!-- ───────────────────────── KPI cards ───────────────────────── -->
-  <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 px-5 py-3 shrink-0">
+  <section class="relative z-10 grid grid-cols-2 lg:grid-cols-4 gap-3 px-5 py-3 shrink-0">
 
     <!-- Total vessels -->
-    <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm">
+    <div class="glass lift p-4 animate-in">
       <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Active Vessels</p>
-      <p class="text-3xl font-mono font-semibold text-slate-100 mt-1 transition-opacity duration-300" id="kpi-total">—</p>
+      <p class="text-3xl font-mono font-semibold text-slate-100 mt-1" id="kpi-total"><span class="skeleton inline-block w-10 h-8"></span></p>
       <p class="text-xs text-slate-500 mt-1">reported in the last 15 min</p>
     </div>
 
-    <!-- Breakdown by type (rows are filled in by app.js) -->
-    <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm">
+    <!-- Breakdown by type -->
+    <div class="glass lift p-4 animate-in">
       <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">By Type</p>
-      <div id="kpi-types" class="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs"></div>
+      <div id="kpi-types" class="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+        <span class="skeleton inline-block w-16 h-4"></span>
+        <span class="skeleton inline-block w-16 h-4"></span>
+      </div>
     </div>
 
     <!-- Tide -->
-    <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm">
+    <div class="glass lift p-4 animate-in">
       <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Tide · Portland</p>
       <p class="mt-1">
-        <span class="text-3xl font-mono font-semibold text-slate-100" id="kpi-tide-height">—</span>
+        <span class="text-3xl font-mono font-semibold text-slate-100" id="kpi-tide-height"><span class="skeleton inline-block w-14 h-8"></span></span>
         <span class="text-sm text-slate-400">ft</span>
         <span class="text-sm ml-1" id="kpi-tide-arrow"></span>
       </p>
@@ -121,62 +240,109 @@
     </div>
 
     <!-- Last update -->
-    <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm">
+    <div class="glass lift p-4 animate-in">
       <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Last AIS Message</p>
-      <p class="text-3xl font-mono font-semibold text-slate-100 mt-1" id="kpi-last-update">—</p>
+      <p class="text-3xl font-mono font-semibold text-slate-100 mt-1" id="kpi-last-update"><span class="skeleton inline-block w-10 h-8"></span></p>
       <p class="text-xs text-slate-500 mt-1">seconds ago</p>
     </div>
   </section>
 
+  <!-- ─────────────── Featured vessels (hidden until something notable is in the bay) ─────────────── -->
+  <section id="featured-row" class="relative z-10 px-5 pb-3 shrink-0 hidden">
+    <div class="flex items-center gap-2 mb-2">
+      <span class="w-1.5 h-1.5 rounded-full bg-gold-400"></span>
+      <p class="text-xs font-medium text-gold-300 uppercase tracking-wider">In the Bay Now</p>
+    </div>
+    <div id="featured-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+  </section>
+
   <!-- ───────────────────── Map + sidebar ───────────────────── -->
-  <main class="flex flex-1 min-h-0 px-5 pb-4 gap-3">
+  <main class="relative z-10 flex flex-1 min-h-0 px-5 pb-4 gap-3">
 
-    <!-- The map fills all remaining space. -->
-    <div id="map" class="flex-1 rounded-xl border border-slate-700 shadow-sm z-0"></div>
+    <div id="map" class="flex-1 rounded-xl border border-slate-700/70 shadow-lg z-0 animate-in"></div>
 
-    <!-- Sidebar: vessel details + ferry schedule. Collapsible. -->
-    <aside id="sidebar" class="w-72 shrink-0 flex flex-col gap-3 overflow-y-auto">
+    <aside id="sidebar" class="w-80 shrink-0 flex flex-col gap-3 overflow-y-auto scroll-slim">
 
-      <!-- Selected vessel details (hidden until a marker is clicked) -->
-      <div id="vessel-panel" class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm hidden">
+      <!-- ════════ Vessel Spotlight (hidden until a marker is clicked) ════════ -->
+      <div id="vessel-panel" class="glass p-4 hidden">
         <div class="flex items-start justify-between">
-          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Vessel</p>
-          <button onclick="closeVesselPanel()" class="text-slate-500 hover:text-slate-300 text-xs">✕</button>
+          <p class="text-xs font-medium text-gold-300 uppercase tracking-wider">Vessel Spotlight</p>
+          <button onclick="closeVesselPanel()" class="btn text-slate-500 hover:text-slate-300 text-xs">✕</button>
         </div>
-        <p class="text-lg font-semibold text-slate-100 mt-1" id="vp-name">—</p>
-        <span id="vp-type" class="inline-block text-xs font-medium px-2 py-0.5 rounded-md mt-1"></span>
-        <dl class="mt-3 space-y-2 text-sm">
+
+        <!-- Photo (or skeleton while looking up, or hidden if none exists) -->
+        <div id="vp-photo-wrap" class="mt-3 hidden">
+          <img id="vp-photo" class="w-full h-36 object-cover rounded-lg border border-slate-700/60" alt="Vessel photo" />
+          <p id="vp-photo-credit" class="text-[10px] text-slate-500 mt-1"></p>
+        </div>
+        <div id="vp-photo-skeleton" class="skeleton w-full h-36 mt-3 hidden"></div>
+
+        <p class="text-lg font-semibold text-slate-100 mt-2" id="vp-name">—</p>
+        <div class="flex items-center gap-2 mt-1">
+          <span id="vp-type" class="inline-block text-xs font-medium px-2 py-0.5 rounded-md"></span>
+          <span id="vp-flag" class="text-sm"></span>
+        </div>
+
+        <!-- Live AIS data (always available) -->
+        <dl class="mt-3 space-y-1.5 text-sm">
           <div class="flex justify-between"><dt class="text-slate-400">MMSI</dt><dd class="font-mono text-slate-200" id="vp-mmsi">—</dd></div>
           <div class="flex justify-between"><dt class="text-slate-400">Speed</dt><dd class="font-mono text-slate-200" id="vp-speed">—</dd></div>
           <div class="flex justify-between"><dt class="text-slate-400">Heading</dt><dd class="font-mono text-slate-200" id="vp-heading">—</dd></div>
           <div class="flex justify-between"><dt class="text-slate-400">Position</dt><dd class="font-mono text-slate-200 text-xs" id="vp-pos">—</dd></div>
           <div class="flex justify-between"><dt class="text-slate-400">Updated</dt><dd class="font-mono text-slate-200" id="vp-updated">—</dd></div>
         </dl>
+
+        <!-- Specs from the external lookup (skeleton while loading) -->
+        <div id="vp-specs-skeleton" class="mt-3 space-y-2 hidden">
+          <div class="skeleton w-full h-4"></div>
+          <div class="skeleton w-3/4 h-4"></div>
+          <div class="skeleton w-5/6 h-4"></div>
+        </div>
+        <div id="vp-specs" class="mt-3 hidden">
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider border-t border-slate-700/60 pt-3">Specifications</p>
+          <dl id="vp-specs-list" class="mt-2 space-y-1.5 text-sm"></dl>
+        </div>
+
+        <!-- History / description timeline, when available -->
+        <div id="vp-history" class="mt-3 hidden">
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider border-t border-slate-700/60 pt-3">History</p>
+          <div id="vp-history-list" class="mt-2 space-y-2 text-xs text-slate-300"></div>
+        </div>
+
+        <p id="vp-noinfo" class="mt-3 text-xs text-slate-500 border-t border-slate-700/60 pt-3 hidden">
+          No additional records for this vessel — smaller craft often aren't in public databases.
+        </p>
       </div>
 
       <!-- Ferry schedule comparison -->
-      <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm">
+      <div class="glass lift p-4 animate-in">
         <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Ferry · Peaks Island</p>
         <div class="flex items-center gap-2 mt-2">
           <span id="ferry-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
           <span class="text-sm text-slate-300" id="ferry-status">checking terminal…</span>
         </div>
         <p class="text-xs font-medium text-slate-400 uppercase tracking-wider mt-4">Next Departures</p>
-        <ul id="ferry-departures" class="mt-1 space-y-1 text-sm font-mono text-slate-200"></ul>
+        <ul id="ferry-departures" class="mt-1 space-y-1 text-sm font-mono text-slate-200">
+          <li class="skeleton w-24 h-4"></li>
+          <li class="skeleton w-24 h-4"></li>
+        </ul>
         <p class="text-xs text-slate-500 mt-3">Casco Bay Lines weekday schedule · Portland terminal</p>
       </div>
 
-      <!-- Vessel list: everything currently on the map -->
-      <div class="rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-sm flex-1 min-h-0 flex flex-col">
+      <!-- Vessel list -->
+      <div class="glass lift p-4 flex-1 min-h-0 flex flex-col animate-in">
         <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">All Vessels</p>
-        <ul id="vessel-list" class="mt-2 space-y-1 text-sm overflow-y-auto"></ul>
+        <ul id="vessel-list" class="mt-2 space-y-1 text-sm overflow-y-auto scroll-slim">
+          <li class="skeleton w-full h-6"></li>
+          <li class="skeleton w-full h-6"></li>
+          <li class="skeleton w-full h-6"></li>
+        </ul>
       </div>
     </aside>
   </main>
 
-  <!-- Sidebar collapse toggle, floating over the map's right edge -->
   <button id="sidebar-toggle" onclick="toggleSidebar()"
-          class="fixed bottom-6 right-6 z-[1000] rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-300 shadow-lg hover:bg-slate-700">
+          class="btn fixed bottom-6 right-6 z-[1000] rounded-lg border border-slate-600/80 bg-slate-800/80 backdrop-blur-md px-3 py-2 text-xs text-slate-300 shadow-lg hover:bg-slate-700 hover:border-gold-500/40">
     Hide panel
   </button>
 

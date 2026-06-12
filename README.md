@@ -7,6 +7,13 @@ plots every vessel on a dark live map, shows the current tide from NOAA, and
 compares the Casco Bay Lines Peaks Island ferry schedule against which ferries
 are actually at the Portland terminal.
 
+Clicking any vessel opens a **Vessel Spotlight** — photo, specifications
+(length, beam, tonnage, year built, flag), and history, pulled live from
+Wikidata/Wikipedia (no API key needed; optional Datalastic support for deeper
+coverage). When something notable is in the bay — a cruise ship, a big
+tanker — it's automatically surfaced in a gold-accented **"In the Bay Now"**
+strip with photo cards.
+
 ![Dashboard screenshot](docs/screenshot.png)
 
 ## How it works
@@ -55,7 +62,8 @@ python ais_client.py
 | File | What it does |
 |---|---|
 | `ais_client.py` | Connects to the AISstream websocket, parses messages, keeps the in-memory vessel store, logs positions to SQLite |
-| `server.py` | Flask server: serves the frontend plus `/api/vessels`, `/api/tides` (NOAA station 8418150), and `/api/ferry` |
+| `server.py` | Flask server: serves the frontend plus `/api/vessels`, `/api/tides` (NOAA station 8418150), `/api/ferry`, `/api/vessel-info`, and `/api/featured` |
+| `vessel_info.py` | Vessel Spotlight lookups: Datalastic (optional key) → Wikidata/Wikipedia (free, keyless), cached in memory for 1 hour per MMSI |
 | `ferry_schedule.json` | Casco Bay Lines weekday Portland → Peaks Island departures + terminal location |
 | `static/index.html` | Dashboard layout (Tailwind, dark theme) |
 | `static/app.js` | Map setup, polling, marker animation, sidebar logic |
@@ -64,6 +72,9 @@ python ais_client.py
 ## Data sources
 
 - Vessel positions: [AISstream.io](https://aisstream.io)
+- Vessel photos, specs & history: [Wikidata](https://www.wikidata.org) and
+  [Wikipedia](https://en.wikipedia.org) (notable vessels only — smaller craft
+  show a clean "no additional info" state); optional [Datalastic](https://datalastic.com)
 - Tides: [NOAA CO-OPS](https://tidesandcurrents.noaa.gov) station 8418150 (Portland, ME)
 - Ferry schedule: [Casco Bay Lines](https://www.cascobaylines.com) published spring 2026 weekday schedule
 - Map tiles: [CARTO](https://carto.com) dark basemap © OpenStreetMap contributors

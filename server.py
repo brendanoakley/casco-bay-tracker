@@ -20,9 +20,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 
 import ais_client
+import vessel_info
 
 app = Flask(__name__, static_folder="static")
 
@@ -219,6 +220,105 @@ def ferry():
         "ferries_at_terminal": ferries_at_terminal,
         "ferry_present": len(ferries_at_terminal) > 0,
     })
+
+
+# ---------------------------------------------------------------------------
+# /api/vessel-info — the Vessel Spotlight lookup
+# ---------------------------------------------------------------------------
+
+def _active_vessels():
+    """Snapshot of vessels with a recent position (same rule as /api/vessels)."""
+    now = datetime.now(ZoneInfo("UTC"))
+    out = []
+    with ais_client.VESSELS_LOCK:
+        for v in ais_client.VESSELS.values():
+            if v["lat"] is None or v["last_update"] is None:
+                continue
+            if now - datetime.fromisoformat(v["last_update"]) > STALE_AFTER:
+                continue
+            out.append(dict(v))
+    return out
+
+
+@app.route("/api/vessel-info")
+def vessel_info_endpoint():
+    """
+    Rich record (photo, specs, history) for one vessel, by MMSI.
+    The heavy lifting + caching lives in vessel_info.py; this endpoint just
+    grabs the vessel's live AIS record (for its IMO number and self-reported
+    dimensions) and hands everything over.
+    """
+    mmsi = request.args.get("mmsi", type=int)
+    if not mmsi:
+        return jsonify({"error": "mmsi query parameter required"}), 400
+
+    with ais_client.VESSELS_LOCK:
+        ais_record = dict(ais_client.VESSELS.get(mmsi) or {})
+
+    info = vessel_info.lookup(mmsi, imo=ais_record.get("imo"), ais_extras=ais_record)
+    return jsonify(info)
+
+
+# ---------------------------------------------------------------------------
+# /api/featured — auto-surface notable vessels currently in the bay
+# ---------------------------------------------------------------------------
+
+@app.route("/api/featured")
+def featured():
+    """
+    Pick up to 3 "worth a look" vessels from whatever is in the bay right
+    now: big tonnage, cruise-sized passenger ships, or anything notable
+    enough to have a Wikidata photo. Most days in Casco Bay this is empty
+    or just ferries — that's expected; the frontend hides the section.
+    """
+    candidates = []
+    # Cap the external lookups per call; results are cached for an hour
+    # anyway, so after the first poll this loop is nearly free.
+    for v in _active_vessels()[:12]:
+        info = vessel_info.lookup(v["mmsi"], imo=v.get("imo"), ais_extras=v)
+
+        tonnage = info.get("gross_tonnage")
+        length = info.get("length_m")
+        is_cruise_sized = v["type"] == "ferry" and (length or 0) >= 90
+        is_big = (tonnage or 0) >= 5000 or (length or 0) >= 100
+        has_photo = bool(info.get("photo_url"))
+
+        if not (is_cruise_sized or is_big or has_photo):
+            continue
+
+        # One-line reason + a gold detail figure for the card.
+        if is_cruise_sized:
+            reason = "Cruise ship in the bay"
+        elif is_big:
+            reason = "Large vessel"
+        else:
+            reason = "Notable vessel"
+        if tonnage:
+            detail = f"{int(tonnage):,} GT"
+        elif length:
+            detail = f"{int(length)} m"
+        else:
+            detail = ""
+
+        candidates.append({
+            "mmsi": v["mmsi"],
+            "name": v["name"] or info.get("name"),
+            "lat": v["lat"],
+            "lon": v["lon"],
+            "photo_url": info.get("photo_url"),
+            "reason": reason,
+            "detail": detail,
+            # Sort key: tonnage dominates, then length.
+            "_score": (tonnage or 0) * 10 + (length or 0),
+        })
+
+    candidates.sort(key=lambda c: c["_score"], reverse=True)
+    top = candidates[:3]
+    if top:
+        top[0]["reason"] = "Largest vessel in the bay" if len(top) > 1 else top[0]["reason"]
+    for c in top:
+        del c["_score"]
+    return jsonify({"featured": top})
 
 
 if __name__ == "__main__":
