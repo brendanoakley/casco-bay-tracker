@@ -41,6 +41,12 @@ CASCO_BAY_BBOX = [[[43.60, -70.30], [43.75, -69.95]]]
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "vessel_history.db")
 
+# Casco Bay Lines fleet names, loaded from the ferry config. A ship's type
+# code only arrives in its occasional static-data broadcast, so without this
+# a known ferry would show as "other" for its first few minutes on screen.
+with open(os.path.join(os.path.dirname(__file__), "ferry_schedule.json")) as _f:
+    KNOWN_FERRY_NAMES = set(json.load(_f)["known_ferries"]["names"])
+
 # ---------------------------------------------------------------------------
 # Shared state
 # ---------------------------------------------------------------------------
@@ -152,6 +158,11 @@ def handle_message(raw, verbose=False):
         })
         if name:
             vessel["name"] = name
+            # Known Casco Bay Lines boat? Call it a ferry right away rather
+            # than waiting for its static data. A real type code (set below
+            # when static data does arrive) still takes priority.
+            if vessel["type_code"] is None and name.upper() in KNOWN_FERRY_NAMES:
+                vessel["type"] = "ferry"
 
         if msg_type == "PositionReport":
             # The actual movement data lives under Message -> PositionReport.
